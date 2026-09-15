@@ -1,0 +1,16 @@
+array:
+    attributes:
+    - length
+    - internal_storage
+    operations:
+    - "length(): int"
+    - "[index]: reference"
+
+string:
+    attributes:
+    - length
+    - internal_storage
+    operations:
+    - "length(): int"
+    - "[index]: reference"
+    - "[n:m]: &string"

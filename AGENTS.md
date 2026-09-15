@@ -76,7 +76,8 @@ Nova 是 C + Java + Rust 风格的玩具编译型语言。
 ### 索引
 
 - 语言规范：`nova语法规范/nova-spec.md`
-- 课堂记录：`课堂笔记/01-语言设计.md`
+- 类型接口：`nova语法规范/nova-types.yaml`（`array` / `string` 的 attributes / operations）
+- 课堂记录：`课堂笔记/01-语言设计.md`、`课堂笔记/02-类型细节.md`
 - 示例程序：`nova程序示例/`（`eqroot` `gcd` `gcd_递归` `hanoi` `inherit` `point` `sort`）
 - 编辑器支持：`nova程序示例/nova-0.4.1.vsix`（VS Code 语法高亮，已全局安装为 `cjathon.nova@0.4.1`，绑定 `.nova` / `.cj`）
 
