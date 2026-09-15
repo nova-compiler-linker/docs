@@ -1,0 +1,35 @@
+class felid {
+	protected {
+		name: string;
+	}
+
+	public {
+		function __constructor__(n: &string const) {
+			name = n;
+		}
+
+		function cry() -> void {
+		    println("a {} cries", name);
+		}
+	}
+}
+
+class tiger <- public felid {
+	public {
+		function __constructor__() {
+			super.__constructor__("tiger");
+		}
+
+		override function cry() -> void {
+			println("a {} roars", name);
+		}
+	}
+}
+
+function main() -> int {
+	let t = tiger();
+
+	t.cry();
+
+	return 0;
+}

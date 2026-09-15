@@ -1,0 +1,20 @@
+function hanoi(n: int, A: char, B: char, C: char) -> void {
+	if n == 1 {
+		println("{} ---> {}", A, B);
+		return;
+	}
+
+	hanoi(n - 1, A, C, B);
+	hanoi(1, A, B, C);
+	hanoi(n - 1, C, A, B);
+}
+
+function main() -> int {
+	let n: int;
+	println("please input the layer:");
+	input(n);
+
+	hanoi(n, 'A', 'B', 'C');
+
+	return 0;
+}

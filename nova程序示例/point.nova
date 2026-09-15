@@ -1,0 +1,34 @@
+class point {
+	private {
+		x: float;
+		y: float;
+	}
+
+	public {
+		function __constructor__($x: float, $y: float) {
+			x = $x;
+			y = $y;
+		}
+
+		function __to_string__() -> string {
+			let s: string;
+			s.format("({}, {})", x, y);
+			return s;
+		}
+
+		function translate(offsetx: float, offsety: float) -> void {
+			x = x + offsetx;
+			y = y + offsety;
+		}
+	}
+}
+
+function main() -> int {
+	let p = point(1.2, 3.4);
+	println("{}", p);
+
+	p.translate(5.0, 6.0);
+	println("{}", p);
+
+	return 0;
+}

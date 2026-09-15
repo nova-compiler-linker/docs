@@ -1,0 +1,26 @@
+function gcd(a: int, b: int) -> int {
+	if a < b {
+		a, b = b, a;
+	}
+
+	let r = a % b;
+	while (r <> 0) {
+		a = b;
+		b = r;
+		r = a % b;
+	}
+
+	return b;
+}
+
+function main() -> int {
+	let a = 0;
+	let b = 0;
+
+	println("please input two positive integers:");
+	input(a, b);
+
+	println("the greatest common divisor of {} and {} is {}", a, b, gcd(a, b));
+
+	return 0;
+}
