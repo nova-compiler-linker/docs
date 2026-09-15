@@ -4,7 +4,7 @@ function select_sort(a: &array) -> void {
 	let k = 0;
 
 	let n = a.length();
-	for i in range(0 : n - 1) {
+	for i in range(0 , n - 1) {
 		k = i;
 		for j in range(i + 1, n) {
 			if a[j] < a[k] {
