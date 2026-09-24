@@ -14,3 +14,4 @@ string:
     - "length(): int"
     - "[index]: reference"
     - "[n:m]: &string"
+    - "format(fmt, args...): void"
