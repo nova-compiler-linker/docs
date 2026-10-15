@@ -2,7 +2,7 @@
 
 > **Nova Language Specification, Chapter 2: Lexical Structure and Fundamental Model of the Language**
 >
-> 版本：0.4（草案，2026-09-24 按《跨章节语义协调》S-01…S-29 回改；v0.3 恢复 `int → float` 算术自动提升、`::` 原子项注、format 可变参豁免、遮蔽制重载查找对齐；v0.4 修正 2.5.1 名字唯一性规则（S-04 兜底）、`return` 加宽（S-29）、删除 `type()` 类转换（S-28）、订正 2.7.11 切片误引）｜ 依据：`nova-spec.md`（权威规范）、`01-语言设计.md`、`02-类型细节.md`、`nova-types.yaml`、`nova程序示例/`、`跨章节语义协调.md`、第三章模块包、第四章工作稿
+> 版本：1.0（终版，2026-10-15：按《跨章节语义协调》S-01…S-52 全量收口；v0.2–v0.4 草案期的逐轮修订记录见 `nova-ch2-补充定义说明.md` §2A）｜ 依据：`nova-spec.md`（权威规范）、`跨章节语义协调.md`（S-01…S-52）、`nova-types.yaml`、`nova程序示例/`、第三章模块包、第四章工作稿
 > 本章撰写体例参照 ISO/IEC 14882（C++ 语言标准）。凡权威规范已定项，一律照写；凡规范未定而本章必须回答的问题，本章按业界最佳实践给出定义，并在 `nova-ch2-补充定义说明.md` 中逐条登记、说明理由。被跨章节协调推翻的原定义在正文中注明"推翻原 D-xx"。
 > 语法描述采用 ISO EBNF（IEC 14977），产生式以等号定义，终结符用等宽字体加引号。
 
@@ -157,7 +157,7 @@ bin-literal  = "0b" ( "0" | "1" ) { "0" | "1" }
 - 无八进制（避免 `010` 这类歧义）。
 - 数字间允许单个 `_` 作分隔符：`1_000_000` 合法；`_` 不参与数值。
 - **无类型后缀**（无 `L` / `u`）。字面量默认类型 `int`；若值超出 `int` 范围（2.6.3.3）但落在 `float` 可精确表示范围内，**仍是错误**——Nova 不提供隐式放大。
-- 字面量的值以 2.6.3.3 的二补数语义解释；十进制字面量超过 $2^{31}-1$ 为**移植期错误**。
+- 字面量的值以 2.6.3.3 的二补数语义解释；**各进制字面量的数值超过 `int` 值域均为移植期错误**（S-52）。特例：一元 `-` **直接作用于整数字面量**时按组合值检查，`-2147483648` 合法（常量折叠期整体检查，不是"字面量 2147483648 先求值再取负"）。
 
 #### 2.4.6.3 浮点字面量
 
@@ -179,7 +179,7 @@ exponent      = ( "e" | "E" ) [ "+" | "-" ] digits
 char-literal = "'" ( graphic-char | escape-seq ) "'"
 ```
 
-- 类型 `char`，值域为 0–127 的 ASCII 码（**基本字符集**）。
+- 类型 `char`。**字面量限 ASCII 0–127（基本字符集）**；`char` 类型本身的值域为 **0–255**（1 字节无符号字节值，S-31）——非 ASCII 字节值只能来自 `string` 索引/迭代或显式 `char(i)`（2.6.7.2）。
 - 转义序列：
 
 | 转义 | 含义 | 码值 |
@@ -219,8 +219,9 @@ none-literal = "none"
 array-literal = "[" [ expression { "," expression } ] [ "," ] "]"
 ```
 
-- 元素类型必须一致（提升后，见 2.6.7）；长度为元素个数。
+- 元素类型必须一致（提升后，见 2.6.7）；一维长度为元素个数。
 - 字面量的类型：`[e1, e2, ..., en]` 的元素类型均为 `T` 时，字面量类型为 `array[T | n]`。
+- **多维字面量采用嵌套形式**（S-41）：初始化 `array[T | n, m]` 可写 `[[1, 2], [3, 4]]`——嵌套深度必须等于维度数、同一层各元素长度一致、叶子元素按共同提升类型统一；锯齿形状（`[[1, 2], [3]]`）为移植期错误。
 - `[]`（空数组字面量）类型不定，**只能**在上下文可推断类型时使用：`let a: array[int | 0] = [];`。
 - 末尾允许**一个**多余逗号（`[1, 2, 3,]`），便于逐行书写（与上文文法 `[ "," ]` 一致，只允许一个）。
 
@@ -271,23 +272,35 @@ delimiter = "(" | ")" | "[" | "]" | "{" | "}"
 
 ## 2.5 基本概念（Fundamental concepts）
 
-### 2.5.1 作用域（Scopes）
+### 2.5.1 作用域与名字解析（Scopes and name resolution）
 
-Nova 采用**词法作用域**（lexical scoping），四级：
+Nova 采用**词法作用域**（lexical scoping）。作用域**嵌套**（由外到内：包 → 模块 → 函数 → 块）描述名字的**生命周期与遮蔽**：
 
-| 作用域 | 引入构造 | 可见范围 |
+| 作用域 | 引入构造 | 生命周期 |
 |---|---|---|
-| **包作用域** | 顶层 `function` / `class` / `type` / `const`（顶层无可变 `let`，见 2.5.4） | 整个翻译单元；跨包经 `::`（第 7 章） |
-| **文件作用域** | `import` 引入的名字 | 本文件 |
+| **包作用域** | 包内所有模块导出的顶层名字的并集 | 程序终止 |
+| **模块作用域** | 本文件顶层 `function` / `class` / `type` / `const`（顶层无可变 `let`，见 2.5.4） | 程序终止 |
 | **函数作用域** | 形参 | 函数体 |
 | **块作用域** | `let` 声明、`for` 循环变量、`match` 分支绑定 | 声明处至块结束 `}` |
 
-- 内层作用域的名字**遮蔽**（shadow）外层同名者；被遮蔽者在其作用域内不可见，无 `outer::x` 之类的逃逸语法（`::` 仅用于包限定）。
+**裸名解析顺序（全语言唯一，S-43）**——与作用域嵌套是两套正交的描述，解析按此表进行、不按嵌套层次推断：
+
+```
+1. 块/函数局部（由内向外）：局部 let、形参、循环变量
+2. 本类及其基类的成员（仅在成员函数体内；遮蔽制，第四章 §6.4 [3]）
+3. 本模块的顶层声明
+4. import 包::模块 引入的裸名（第四章 §7.3 [4]）
+5. uni 的预导入名字（第四章 §7.6）
+6. 全部未命中 → 移植期错误
+```
+
+- 第 3、4 步**同名冲突**（import 裸名与本模块顶层声明同名）为**移植期错误**（第四章 §7.3 [5]），不发生遮蔽。
+- 内层作用域的名字**遮蔽**（shadow）外层同名者；被遮蔽者在其作用域内不可见，无 `outer::x` 之类的逃逸语法（`::` 仅用于包/模块/类限定）。
 - 同一作用域内的名字唯一性规则（2026-09-24 按 S-04 兜底修订——原「名字必须唯一」是禁重载时期的遗留句式，与 §2.7.10 直接冲突）：
   - **函数名可按重载共享**（签名 = 参数类型列表，2.7.10）；
   - 类名、`type` 别名、包级 `const` 名各自唯一，且类名不得与任何函数名重名（第四章 §6.1 [2]）；
   - 同名 `let` 创建新绑定并遮蔽前者，已解析的表达式仍指向原绑定（第三章 3.1.2）。
-- **前向引用**：块作用域的变量在声明之前不可见（无提升）。函数与类在包作用域内**允许**前向引用（任意顺序声明，两趟解析）。
+- **前向引用**：块作用域的变量在声明之前不可见（无提升）。函数与类在模块作用域内**允许**前向引用（任意顺序声明，两趟解析）。
 
 ### 2.5.2 名字与绑定（Names and bindings）
 
@@ -361,7 +374,7 @@ $$
 | 类型 | size（字节） | align | 备注 |
 |---|---|---|---|
 | `bool` | 1 | 1 | 只有 0/1 两个合法位模式 |
-| `char` | 1 | 1 | ASCII 0–127 |
+| `char` | 1 | 1 | 无符号字节值 0–255（S-31）；字面量限 ASCII 0–127 |
 | `int` | 4 | 4 | 二补数 |
 | `float` | 8 | 8 | IEEE 754 binary64 |
 | `void` | 0 | 1 | 不占存储 |
@@ -381,7 +394,7 @@ $$
 
 #### 2.6.3.2 `char`
 
-1 字节，值域 $[0, 127]$，即 7 位 ASCII 存于 1 字节高位补 0。`char` **不直接参与算术与比较运算**——算术前必须显式写 `int(c)`（跨章节协调 S-03，推翻原 D-29 的自动提升）；赋值、实参匹配、重载排序与 `int → float` 算术提升不受影响（2.6.7.1）。
+1 字节**无符号字节值**，值域 $[0, 255]$（S-31）。**字面量限 ASCII 0–127**（2.4.6.4）；非 ASCII 字节值只能来自 `string` 索引/迭代或显式 `char(i)`。`char` **不直接参与算术运算**——算术前必须显式写 `int(c)`（跨章节协调 S-03）；**比较运算（`==` `<>` `<` `>` `<=` `>=`）直接合法**，按字节值比较，与 `int`/`float` 比较沿提升链（2.7.5）；赋值、实参匹配、重载排序与 `int → float` 算术提升不受影响（2.6.7.1）。
 
 #### 2.6.3.3 `int`
 
@@ -395,7 +408,7 @@ $$
 
 - 溢出检查是**语言保证**，不是可选的调试行为——合规实现必须使越界可观察（trap），不得静默回绕。
 - 需要回绕/饱和语义时由 `math` 包提供显式函数（`math::wrapping_add` 等，第 7 章）。
-- 理由：教学语言下"错误必须可见"优先；静默回绕是 C/Java 事故的经典来源，且与 2.10.3 的 trap 哲学一致。
+- 理由：工程语言定位下"错误必须可见"优先；静默回绕是 C/Java 事故的经典来源，且与 2.10.3 的 trap 哲学一致。
 
 #### 2.6.3.4 `float`
 
@@ -417,7 +430,7 @@ $$
   1. 函数返回类型 `-> void`（或省略返回类型）时，调用表达式的类型；
   2. 赋值表达式的类型（2.7.6）；
   3. 块值为"无意义"时的类型（2.7.8）；
-  4. 字面量 `none` 可显式书写，**只能**用于 `return none;`（返回 `void` 的函数中）。
+  4. 字面量 `none` 可显式书写，**只能**出现在 `return none;` 与**块尾表达式**位置（等价空块值，2.7.8）；其余位置（操作数、实参、数组元素、绑定初始化器）非法（S-48）。
 - **规则（阻塞性）**：类型为 `void` 的表达式**不可**绑定到 `let`（`let x = f();` 当 `f` 返回 `void` 时为移植期错误，同 Rust 对 `()` 的宽容不同——Nova 选择严格），不可作实参、不可作索引、不可出现在运算数位置。
 - `void` 不可作数组基类（`array[void | n]` 非法）。
 
@@ -430,8 +443,8 @@ $$
   - 属性 `length`、`internal_storage`；
   - 操作 `length() -> int`、`[index] -> &char`、`[n:m] -> &string`、`format(fmt, args...) -> void`。
 - **`length` 属性与 `length()` 方法**：同一访问的两个拼写，`length` 为字段语法糖，等价于 `length()`；二者均返回**字节数** $n_{\text{bytes}}$。
-- `[index]`：返回第 `i` **字节**的引用（`&char`）。越界 → trap（2.10.3）。
-- `[n:m]`：切片，**左闭右开**，返回 `&string`（共享底层存储的视图，不复制）。$0 \le n \le m \le \text{length}$，否则 trap。
+- `[index]`：返回第 `i` **字节**的引用（`&char`，字节值 0–255，S-31）。越界 → trap（2.10.3）。
+- `[n:m]`：切片，**左闭右开**，返回 `&string`（共享底层存储的只读视图，不复制）。$0 \le n \le m \le \text{length}$，否则 trap。**视图可再索引、再切片**（S-38），坐标相对**视图自身**（$0 \le n \le m \le$ 视图长度）；视图的生命周期不得逃出原字符串。
 - 字符串**不可变**：`s[i] = 'x'` 为移植期错误（索引结果 `&char` 指向只读存储，不可作左值）。
 - 字符串相等比较 `==` / `<>` 为**内置支持**（按字节序列比较）——这是"类类型不参与内置运算"的**唯一例外**，理由：`==` 是等价关系而非算术运算，业界（Go/Rust/C#）普遍将字符串内容相等视为语言级能力（Java 的 `equals` 路线已被广泛诟病）。
 - 拼接：`+` **不**用于字符串（遵守"不参与内置运算"）。拼接与格式化经 `uni` 包：`uni::concat(a, b)`（第 7 章）。
@@ -450,13 +463,17 @@ array-type = "array" "[" type "|" expression { "," expression } "]"
 
   `array[T | n]` 为一维，`array[T | n, m]` 为二维，语义 = **基类 + 维度 + 各维长度**。
 - **长度是类型的一部分**：`array[int | 9]` 与 `array[int | 10]` 是不同类型（权威规范 §3.1，与 C++ 不同）。
-- 形参处允许**省略长度**：`function f(a: &array)` 接受任意长度、任意基类的数组——这是"数组顶类型"（top type）简写，**仅确定用于形参**；`let` 位置是否允许 `&array` 未定（§9.3 第 5 项，留待课堂确认）。省略长度时运行时 `length()` 返回实际长度。
+- **形参形状分级（S-35）**：
+  - `array[T]`（基类型 `T`、**长度省略**，仅限形参位）：`function f(a: &array[int])` 接受基类型恰为 `int`、长度任意的数组；体内 `a[i]` 的静态类型为 `&int`，元素访问与迭代**完整类型检查**。`let`、字段、返回类型处**不得**使用省长度形状（必须写全维度）。
+  - `array`（全省略，仅限形参位）：接受任意数组句柄，但体内**只能** `length()`、整体转发、`==`/`<>` 身份比较——**不得**索引、迭代或比较元素（元素类型编译期未知，与强类型冲突）。`let` 位置是否允许省长度仍未定（`nova-spec.md` §9.3 第 5 项）。
 - 类型中的长度 `n` 与运行时 `length`：静态数组中二者恒等；`length` 属性/方法读取的是隐藏存储中的长度字段（与类型信息冗余存放，供 `&array` 形参场景使用）。
 - 布局：句柄 `{ internal_storage: ptr, length: int }`（16 字节）+ 堆上 $n_1 \times n_2 \times \cdots \times \operatorname{size}(T)$ 的连续存储，行优先（row-major）。
 - 接口：`length() -> int` 返回**所有维度元素总数** $n_1 \times n_2 \times \cdots$（跨章节协调 S-07，推翻原"第一维长度"定义）、`[index] -> &T`。
 - `[index]` 返回**元素引用**（左值）：`a[0] = 1;` 修改底层存储本身（与 §2.4 引用语义一致）。
 - **多维索引采用逗号全维下标**：`a[i, j]` 一次消费全部维度（`array[T | n, m]` 上 `i < n`、`j < m`）。**不存在部分下标**——`a[i]` 对多维数组是移植期错误，也不产生行视图（统一裁决 C-1：第三章"单下标行主序展平"与协调稿 `a[i][j]` 链式互斥，采逗号下标，语义唯一、越界检查最直接）。
 - `array` **不支持** `[n:m]` 切片（跨章节协调 S-07，推翻原 D-24）：切片需要视图类型，而 `array` 无 `&string` 式的现成返回类型；需要子数组时经显式复制函数（第 7 章）。`string` 的 `[n:m]` 不受本条影响（2.6.4.1）。
+- **数组基类型不得为数组**（S-41）：`array[array[int | 3] | 2]` 非法；多维一律用逗号维度 `array[T | n, m]` 表达。
+- 引用不能作数组基类（2.6.6）；`void` 不能作数组基类（2.6.3.5）。
 - 越界（任一维下标为负或不小于该维长度）→ trap。
 - 数组字面量 `[1, 2, 3]` 类型推断为 `array[int | 3]`（2.4.6.7）。
 - 动态数组 `✗`（权威规范 §3.2）。
@@ -502,6 +519,7 @@ reference-type = [ "const" ] "&" type | "&" type [ "const" ]
 - 转换规则：`&T` 可隐式转为 `const &T`（加只读）；反向非法。
 - 裸 `const T`（无 `&`，值类型）：合法，含义为该变量初始化后不可再赋值；类类型上 `const` 等价 `const &T`。
 - 引用不能为空（无 null 引用）、不能重新绑定、不能作数组基类；返回局部变量/临时值的引用必须编译期拒绝。
+- 引用可绑定的表达式**包括字符串切片视图**（S-38）：`let &v = s[0:2];` 合法；`let v = s[0:2];`（无 `&`）也合法——从引用类型表达式推导，`v` 的类型为 `&string`（2.8.6）。
 
 ### 2.6.7 转换（Conversions）
 
@@ -514,8 +532,8 @@ $$
 $$
 
 - `bool` **不参与**任何隐式转换（无 `bool→int`，亦无 `int→bool`——需要判非零写 `x <> 0`，跨章节协调 S-03）。
-- **提升的适用范围（2026-09-24 二次修订，S-03/第三章 3.3.4）**：赋值、实参对形参匹配、多重赋值两侧、重载候选排序，以及**算术与比较中的 `int → float`**。
-- **被禁止的仅是 `char` 的自动提升**：`char` 参与算术/比较前必须显式 `int(c)`（2.6.3.2，S-03）；一旦转为 `int`，即按 `int` 参与。`int` 与 `float` 混合运算**合法**，`int` 自动提升为 `float`，结果为 `float`（第三章 3.3.4）。
+- **提升的适用范围（2026-10-15 终版，S-03/S-29/S-36）**：赋值与带标注 `let`（含类类型隐式向上转换，S-33）、实参对形参匹配、多重赋值两侧、重载候选排序、**`return` 加宽到返回类型**（S-29；含类类型向上转换，S-36），以及**算术与比较中的 `int → float`**。
+- **算术禁止的仅是 `char` 的直接参与**：`char` 参与算术前必须显式 `int(c)`（2.6.3.2，S-03）；一旦转为 `int`，即按 `int` 参与。`char` 的**比较直接合法**（按字节值，S-31）。`int` 与 `float` 混合运算**合法**，`int` 自动提升为 `float`，结果为 `float`（第三章 3.3.4）。
 - 注意与 S-15（`if`/`match` 分支完全同型）相区分：**算术/比较**允许 int→float 自动提升，**分支类型统一**不允许——两条规则各自独立，前者是运算数规则，后者是类型统一规则。
 
 #### 2.6.7.2 显式转换
@@ -524,11 +542,11 @@ $$
 
 | 转换 | 语义 |
 |---|---|
-| `int(c)`，`c: char` | 数值不变（0–127） |
-| `char(i)` | 仅接受 $0 \le i \le 127$，越界 → **trap**（S-03，推翻原"回绕 mod 128"） |
+| `int(c)`，`c: char` | 数值不变（0–255，S-31） |
+| `char(i)` | 仅接受 $0 \le i \le 255$，越界 → **trap**（S-31 修订原 0–127 域） |
 | `float(i)` | 精确转换；$|i| > 2^{24}$ 时按 IEEE 舍入（可能失精，**警告**） |
 | `int(f)` | **截断向零**：$\operatorname{trunc}(f)$；$f$ 为 NaN/∞ 或超 `int` 范围 → trap |
-| `char(f)` | 先向零截断为 `int`，再按 `char(i)` 检查 0–127，越界 → trap |
+| `char(f)` | 先向零截断为 `int`，再按 `char(i)` 检查 0–255，越界 → trap |
 
 - `bool(x)` **不提供**（S-03，推翻原 D-30 的 `int→bool`）：判非零一律写 `x <> 0`。
 - `string ↔ int/float`：**无**内置转换，经 `uni` 包（第 7 章）。
@@ -536,15 +554,16 @@ $$
 
 #### 2.6.7.3 运算的类型规则
 
-二元算术/关系运算的操作数限 `int` / `float`（`char` 须先显式 `int(c)`，`bool` 不可参与），混合时取提升链上最窄公共类型：
+二元**算术**运算的操作数限 `int` / `float`（`char` 须先显式 `int(c)`，`bool` 不可参与；**`%` 仅接受 `int`**，S-46），混合时取提升链上最窄公共类型：
 
 $$
 \frac{T_1, T_2 \in \{\mathsf{int}, \mathsf{float}\} \quad U = \max(T_1, T_2) \text{（按 } \mathsf{int} < \mathsf{float} \text{ 序）}}{T_1 \mathbin{\text{op}} T_2 : U}
 $$
 
 - `int op int` → `int`；任一侧为 `float` → 另一侧自动提升为 `float`，结果 `float`（第三章 3.3.4）。
-- `char` 或 `bool` 出现在操作数位置 → 移植期错误（`char` 先写 `int(c)`）。
-- 比较运算（`< > <= >=`）同规则；`==`/`<>` 按 2.7.5。
+- `char` 或 `bool` 出现在**算术**操作数位置 → 移植期错误（`char` 先写 `int(c)`）。
+- **关系运算（`< > <= >=`）**：`int`/`float` 同上；`char` 与 `char` 按字节值直接比较、`char` 与 `int`/`float` 沿提升链比较（S-31）；`bool` 与类类型不可排序（`string` 亦无排序，2.7.5）。
+- **相等运算（`==` `<>`）**：按 2.7.5。
 
 ---
 
@@ -564,9 +583,10 @@ relational-expression  = additive-expression { ( "<" | ">" | "<=" | ">=" ) addit
 additive-expression    = multiplicative-expression { ( "+" | "-" ) multiplicative-expression }
 multiplicative-expression = unary-expression { ( "*" | "/" | "%" ) unary-expression }
 unary-expression       = [ "-" | "+" | "not" ] postfix-expression
-postfix-expression     = primary-expression { call-suffix | index-suffix | member-suffix }
+postfix-expression     = primary-expression { call-suffix | index-suffix | slice-suffix | member-suffix }
 call-suffix            = "(" [ argument-list ] ")"
 index-suffix           = "[" expression { "," expression } "]"
+slice-suffix           = "[" expression ":" expression "]"     # 操作数限 string / &string（2.6.4.1，S-38）
 member-suffix          = "." identifier
 primary-expression     = literal | qualified_name | "(" expression ")"
                        | "self" | "super" | array-literal | block-expression
@@ -606,13 +626,15 @@ $$
 
 | 运算 | 操作数类型 | 结果 |
 |---|---|---|
-| `< > <= >=` | `int` / `float`（混合时 `int` 自动提升，2.6.7.3；`char` 须先 `int(c)`） | `bool` |
-| `== <>` | 上述 + `bool` + `string`（按内容） + 类类型（引用同一性） | `bool` |
+| `< > <= >=` | `int` / `float`（混合时 `int` 自动提升，2.6.7.3）；`char` 与 `char` 按字节值、`char` 与 `int`/`float` 沿提升链（S-31） | `bool` |
+| `== <>` | 上述 + `bool` + `char`（字节值） + `string`（按内容） + 类类型（引用同一性） | `bool` |
 
 - 数值比较：`int` 精确；`float` 遵循 IEEE（NaN 与任何值 `==` 为 `false`、`<>` 为 `true`，`<` `>` `<=` `>=` 含 NaN 一律 `false`）。
 - 类类型 `==`：比较**引用同一性**（是否同一对象），`<>` 为其否定。`string` 例外：`==` / `<>` 比较**内容**（2.6.4.1）。
 - `string` **不支持** `<` `>` `<=` `>=` 排序比较（跨章节协调 A-11/S-08，推翻原"按字节字典序"定义）：无示例需求，排序比较归 `uni` 函数。
 - `bool` 仅可 `==` `<>`，不可 `<`。
+
+**逻辑运算的类型规则（S-45）**：`and` / `or` / `xor` / `not` 的操作数**必须为 `bool`**，结果亦为 `bool`；无真值转换（`not 1` 非法）。`xor` 真值表 = 两操作数**不同**为真；短路规则见 2.5.5（`and`/`or` 短路，`xor` 不短路）。
 
 ### 2.7.6 赋值表达式
 
@@ -664,8 +686,8 @@ block-expression = "{" { statement } [ expression ] "}"
 |---|---|
 | 变量声明 | `let x: T = e;` / `let x = e;` / `let &a = c;` |
 | 类型别名 | `type Name = T;` |
-| 导入 | `import pkg;` |
-| 函数/类声明 | 声明语句 |
+| 导入 | `import pkg;`（仅模块最前，第四章 §7.3 [2]） |
+| 函数/类声明 | 声明语句（**仅模块顶层**，S-37） |
 | 跳转 | `return e?;` / `break;` / `continue;` |
 
 以下构造是**表达式**（可出现在表达式位置）：字面量、标识符、运算、调用、索引、成员访问、块、`if`、`match`、赋值（类型 `void`）。
@@ -686,7 +708,7 @@ call-suffix = "(" [ expression { "," expression } ] ")"
 ```
 
 - 函数调用：实参按位置与形参一一匹配（无默认参数、无关键字实参）；
-- **允许函数重载**（跨章节协调 S-04，推翻原 D-20 的"包作用域名字唯一"）：同名函数的**签名 = 参数类型列表**，返回类型不参与区分。解析顺序：① 按名字与实参数量筛选；② 全部参数**精确匹配**者优先；③ 无精确匹配时按 `char → int → float` 提升链排序（提升次数更少者优先）；④ 仍有多个同等候选 → 移植期错误（`NOVA-E-OVERLOAD`），不得由实现猜测。`&T` / `const &T` / `&T const` 三种引用形状**不产生**不同签名（2.6.6）。
+- **允许函数重载**（跨章节协调 S-04，推翻原 D-20 的"包作用域名字唯一"）：同名函数的**签名 = 参数类型列表**，返回类型不参与区分。解析顺序：① 按名字与实参数量筛选；② 全部参数**精确匹配**者优先；③ 无精确匹配时按 `char → int → float` 提升链排序（提升次数更少者优先）；④ 仍无匹配时允许**类类型隐式向上转换**参与（S-36）；⑤ 仍有多个同等候选 → 移植期错误（`NOVA-E-OVERLOAD`），不得由实现猜测。`&T` / `const &T` / `&T const` 三种引用形状**不产生**不同签名（2.6.6）。
 - 传参语义按 2.6.5；`&T` 形参要求实参为左值且可写性匹配（`const &T` 接受任意 `T` 左值；`&T const` 可接受字面量与临时值）；
 - 构造函数调用 `ClassName(args)` 语法合法，规则见第 6 章（`point.nova:27` 在用）；构造函数同样可重载；
 - 递归合法，无人为深度限制（栈耗尽 → trap）；
@@ -706,7 +728,7 @@ call-suffix = "(" [ expression { "," expression } ] ")"
 ### 2.8.1 表达式语句与空语句
 
 ```
-statement = expression-statement | declaration | if-statement | match-statement
+statement = expression-statement | block-declaration | if-statement | match-statement
           | while-statement | for-statement | jump-statement | block | empty-statement
 expression-statement = expression ";"
 empty-statement      = ";"
@@ -732,13 +754,13 @@ if-statement = "if" expression block
 match-statement = "match" expression "{" { match-arm } [ else-arm ] "}"
 match-arm       = pattern "=>" block
 else-arm        = "else" "=>" block
-pattern         = expression        # 形态（比较模式 / 值模式）由语义判定，见下
+pattern         = expression        # 形态（条件模式 / 值模式）由语义判定，见下（S-34）
 ```
 
 - 被匹配对象 `obj`：单值、比较表达式或逻辑表达式（权威规范 §5.2）。
-- 匹配规则（登记 D-21，将 §5.2 的模糊表述精确化）——**命中判定由模式形态决定，而非 obj 形态**：
-  - 模式为**比较模式**（含 `<` `>` `<=` `>=` `==` `<>` 的表达式）：求值模式，结果必须为 `bool`，**为 `true` 即命中**。模式内可自由引用 `obj` 中的变量：`match d { d > 0 => {...} }`（`eqroot.nova:12`）中 `d > 0` 独立求值判真。
-  - 模式为**值模式**（字面量、布尔字面量、无比较运算的表达式）：求值模式得 `p`，命中条件 `obj == p`（比较按 2.7.5：`string` 按内容，类类型按同一性；两侧须满足 2.6.7.3 可比较）。
+- 匹配规则（登记 D-21；2026-10-15 按 S-34 扩充逻辑运算符）——**命中判定由模式形态决定，而非 obj 形态**：
+  - 模式为**条件模式**（含关系 `<` `>` `<=` `>=`、相等 `==` `<>` 或逻辑 `and` `or` `xor` `not` 运算符的表达式）：求值模式，结果必须为 `bool`，**为 `true` 即命中**。模式内可自由引用 `obj` 中的变量：`match d { d > 0 => {...} }`（`eqroot.nova:12`）中 `d > 0` 独立求值判真。
+  - 模式为**值模式**（字面量、名字、调用等不含上述运算符的表达式）：求值模式得 `p`，命中条件 `obj == p`（比较按 2.7.5：`string` 按内容，类类型按同一性；两侧须满足 2.6.7.3 可比较）。`true =>` / `false =>` 是**值模式**（即 `obj == true`），布尔对象按值匹配。
   - 两类模式**不可在同一 `match` 体内混用**（移植期错误）——保证一个 `match` 只表达一种分派意图。
 - 分支**自上而下**顺序求值，首个命中分支执行后 `match` 结束；后续分支的模式**不求值**。
 - `else` 即 default。`match` 作语句时 `else` 可省；作表达式时强制（2.7.9）。
@@ -748,15 +770,13 @@ pattern         = expression        # 形态（比较模式 / 值模式）由语
 
 ```
 while-statement = "while" expression block
-for-statement   = "for" identifier "in" iterable block
-iterable        = "range" "(" expression [ "," expression [ "," expression ] ] ")"
-                | array-expr | string-expr | slice
+for-statement   = "for" identifier "in" expression block
 ```
 
 - `while`：条件必须 `bool`（同 2.8.2）。先判后执（无 do-while，✗）。
 - `range(n)` ≡ `range(0, n)`；`range(n, m)` ≡ `range(n, m, 1)`；`range(n, m, s)`：迭代 $v_k = n + k \cdot s$，$s > 0$ 时取 $v_k < m$、$s < 0$ 时取 $v_k > m$ 的全体 $v_k$（**左闭右开**，与切片一致）。**步长为零 → trap**（`NOVA-R-ZERO-STEP`；若常量求值阶段可证明步长为零，编译期报同一错误码——跨章节协调 S-13，推翻原"字面量 0 一律移植期错误"）。
 - `range` 是**语言内建构造**（非普通函数，不返回迭代器对象；`for` 在语法上特判 `range` 调用，编译为计数循环；不可 `let r = range(5)`——登记 D-22，第 7 章 `uni` 表中的 `range` 条目按本条理解）。
-- `for x in arr`：按序迭代数组元素（`array`、`string`、切片均可迭代——统一裁决 B-10）；`x` 是元素的**只读副本**：值类型复制值，类类型复制句柄；对 `x` 赋值不改变集合元素，写数组须经 `a[i]`（跨章节协调 S-06，推翻原"只读别名"表述——副本语义与别名语义的唯一差别就在类类型元素的"重绑定 vs 改对象"，取副本）。`for c in "abc"` 按字节迭代。
+- `for x in expr` 的**可迭代性由语义检查**（S-39）：**同步序列** = `range` 调用、`array` 表达式（含 `&array[T]` 形参，2.6.4.2）、`string`、字符串切片；**异步序列** = 生成器流 `Stream⟨f⟩`（第四章 §8.4），须在异步函数体内且取元素处为切换点。`x` 是元素的**只读副本**：值类型复制值，类类型复制句柄；对 `x` 赋值不改变集合元素，写数组须经 `a[i]`（跨章节协调 S-06，推翻原"只读别名"表述——副本语义与别名语义的唯一差别就在类类型元素的"重绑定 vs 改对象"，取副本）。`for c in "abc"` 按字节迭代（`c` 的字节值 0–255，S-31）。
 - 循环变量 `x` 的作用域 = 循环体块；每轮迭代视为新绑定。
 - `break`：结束**最内层**一条循环；`continue`：跳到最内层循环的下一轮判定。二者不可跳出 `match`（`match` 非循环）。
 - 循环是**语句**，无值（`let x = while ... {}` 非法）。
@@ -774,10 +794,12 @@ jump-statement = "return" [ expression ] ";" | "break" ";" | "continue" ";"
 ### 2.8.6 声明语句
 
 ```
-declaration = "let" [ "&" ] identifier [ ":" type ] [ "=" expression ] ";"
-            | "const" identifier ":" type "=" expression ";"
-            | "type" identifier "=" type ";"
-            | function-declaration | class-declaration
+(* 块内（函数体/块作用域）只允许这三种声明，S-37 *)
+block-declaration = "let" [ "&" ] identifier [ ":" type ] [ "=" expression ] ";"
+                  | "const" identifier ":" type "=" expression ";"
+                  | "type" identifier "=" type ";"
+(* 模块顶层另允许函数与类声明；完整顶层声明集见第四章 §7.11 *)
+top-declaration   = block-declaration | function-declaration | class-declaration
 ```
 
 - **`let` 推导规则**（登记 D-16）：
@@ -786,6 +808,7 @@ declaration = "let" [ "&" ] identifier [ ":" type ] [ "=" expression ] ";"
   - `let x: T;`（无初始化）：合法，`x` 为**未初始化槽位**，读取前必须通过确定性初始化检查（2.9.1）；
   - `let x;`（两者皆无）：非法。
 - **`const`**：绑定只读——初始化后不可再赋值，不要求编译期可求值（编译期常量是包级 `const` 的额外要求，见 2.9.3 与第 7 章）。
+- **嵌套声明禁令（S-37）**：函数体内**不得**声明 `function` 与 `class`（格式错误，与第四章 §6.1 [3] 的嵌套类禁令一致）；`let`/`const`/`type` 允许。
 - 推导**不**跨语句、不跨函数（无全局推断引擎），仅"从初始化表达式取类型"。
 
 ### 2.8.7 函数声明
@@ -796,7 +819,7 @@ parameter-list = parameter { "," parameter }
 parameter      = identifier ":" type
 ```
 
-- **返回类型省略时的推导**（跨章节协调 B-2，推翻原"省略 ≡ `-> void`"）：从函数体内所有带值 `return` 推导——全部带值返回**同型**则返回类型为该型；没有任何带值返回则为 `void`。`point.nova` 的 `__constructor__` 无返回类型、`hanoi.nova` 的 `-> void` 显式写法与省略等价。
+- **返回类型省略时的推导**（S-16，2026-10-15 按 S-32 扩展到异步函数）：从函数体内所有带值 `return` 推导——全部带值返回**同型**则返回类型为该型；没有任何带值返回则为 `void`。`point.nova` 的 `__constructor__` 无返回类型、`hanoi.nova` 的 `-> void` 显式写法与省略等价。**生成器例外**：含 `yield` 的函数必须显式声明元素类型（无带值 return 可供推导），省略为格式错误（第四章 §8.4 [3]，S-32）。
 - 形参类型后置（权威规范 §5.5）。
 - `main` 的签名（跨章节协调 S-05，推翻原 D-25 的带参形式；权威规范 §9.1 第 5 条）：
 
@@ -882,11 +905,11 @@ Nova 无异常处理（✗）。运行时错误采取 **trap**：
 | 静态不可判定的悬垂引用（2.5.4） | trap |
 | 递归过深（栈耗尽） | trap |
 
-**理由**（登记 D-12）：无异常语言中，越界行为只有"UB / trap / 返回哨兵"三选。哨兵破坏类型系统（`a[i]` 返回 `&T`，无哨兵可放），UB 违背"强类型 + 可教"的定位，trap 是唯一与 `&T` 引用语义自洽且实现代价最低的方案（一次边界比较 + `abort`）。
+**理由**（登记 D-12）：无异常语言中，越界行为只有"UB / trap / 返回哨兵"三选。哨兵破坏类型系统（`a[i]` 返回 `&T`，无哨兵可放），UB 违背"强类型 + 可诊断"的取向，trap 是唯一与 `&T` 引用语义自洽且实现代价最低的方案（一次边界比较 + `abort`）。
 
 ### 2.10.4 `main` 的终止
 
-`return code;`（`code: int`）正常退出，进程退出码取 `code mod 256`。程序亦可经 `uni` 的 `exit` 提前终止（第 7 章）。
+`return code;`（`code: int`）正常退出，进程退出码取返回值二补数的**低 8 位**（≡ `mod 256`；`-1` → `255`，S-47）。程序亦可经 `uni::exit(code)` 提前终止，退出码同规则（S-42，第四章 §7.6 [3]）。
 
 ---
 
@@ -937,23 +960,24 @@ relational-expression     = additive-expression { ( "<" | ">" | "<=" | ">=" ) ad
 additive-expression       = multiplicative-expression { ( "+" | "-" ) multiplicative-expression }
 multiplicative-expression = unary-expression { ( "*" | "/" | "%" ) unary-expression }
 unary-expression          = [ "-" | "+" | "not" ] postfix-expression
-postfix-expression        = primary-expression { call-suffix | index-suffix | member-suffix }
+postfix-expression        = primary-expression { call-suffix | index-suffix | slice-suffix | member-suffix }
 primary-expression        = literal | qualified_name | "(" expression ")" | "self" | "super"
                           | block-expression | if-expression | match-expression
 qualified_name            = identifier { "::" identifier }
 
 (* 语句 *)
-statement = expression-statement | declaration | if-statement | match-statement
+statement = expression-statement | block-declaration | if-statement | match-statement
           | while-statement | for-statement | jump-statement | block | ";"
-declaration = "let" [ "&" ] identifier [ ":" type ] [ "=" expression ] ";"
-            | "const" identifier ":" type "=" expression ";"
-            | "type" identifier "=" type ";"
-            | function-declaration | class-declaration
+block-declaration = "let" [ "&" ] identifier [ ":" type ] [ "=" expression ] ";"
+                  | "const" identifier ":" type "=" expression ";"
+                  | "type" identifier "=" type ";"
+                  (* 函数与类声明仅限模块顶层（S-37）；顶层全集见第四章 §7.11 top_decl *)
 if-statement    = "if" expression block { "elseif" expression block } [ "else" block ]
 match-statement = "match" expression "{" { pattern "=>" block } [ "else" "=>" block ] "}"
 while-statement = "while" expression block
-for-statement   = "for" identifier "in" iterable block
-iterable        = "range" "(" expression { "," expression } ")" | array-expr | string-expr
+for-statement   = "for" identifier "in" expression block
+                  (* 可迭代性由语义检查（S-39）：同步序列 range/array/string/切片/&array[T]；
+                     异步序列 Stream⟨f⟩ 须在异步函数体内（第四章 §8.4） *)
 jump-statement  = "return" [ expression ] ";" | "break" ";" | "continue" ";"
 function-declaration = "function" identifier "(" [ parameter-list ] ")" [ "->" type ] block
 ```
@@ -967,7 +991,8 @@ function-declaration = "function" identifier "(" [ parameter-list ] ")" [ "->" t
 ```nova
 let a = 1 + 2 * 3;               # a = 7
 let b = not (1 <> 2) or 3 > 4;   # b = false
-let c = int('a') + 1;            # c: int = 98（char 须显式转 int，2.6.3.2）
+let c = int('a') + 1;            # c: int = 98（char 算术须显式转 int，2.6.3.2）
+let eq = 'a' == 'a';             # char 比较直接合法，按字节值（S-31）
 let d = 7 % -2;                  # d = 1（符号随被除数）
 let e = int(3.9);                # e = 3（截断向零）
 let f = 1_000 + 0x10;            # f = 1016
@@ -979,7 +1004,7 @@ let g = 2147483647 + 1;          # 运行期 trap（NOVA-R-INT-OVERFLOW，常量
 ```nova
 let n = 5;
 let parity = if n % 2 == 0 { "even" } else { "odd" };  # parity: string（两分支同型）
-let sign = match n {          # 比较模式：各分支条件独立求值判真（2.8.3）
+let sign = match n {          # 条件模式：各分支条件独立求值判真（2.8.3，S-34）
     n > 0  => { 1 }
     n == 0 => { 0 }
     else   => { -1 }

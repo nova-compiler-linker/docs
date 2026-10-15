@@ -1,4 +1,4 @@
-function select_sort(a: &array) -> void {
+function select_sort(a: &array[int]) -> void {
 	let i = 0;
 	let j = 0;
 	let k = 0;
@@ -18,7 +18,7 @@ function select_sort(a: &array) -> void {
 	}
 }
 
-function print_arr(a: const &array) -> void {
+function print_arr(a: const &array[int]) -> void {
 	for i in range(0, a.length()) {
 		print("{} ", a[i]);
 	}
